@@ -18,7 +18,7 @@ Related documents:
 | Aspect | Decision | Ref |
 |---|---|---|
 | Host processor | **OpenHW CORE-V CV32A60X**, synchronous, XLEN = 32. Release `cv32a60x-v6.0.0`, commit `b1f80bd`, `CVA6ConfigCvxifEn` enabled | DEC-05 |
-| Host ↔ coprocessor link | **CV-X-IF v1.0.0 (ratified)**: the issue (with its unsplit register transaction), commit and result interfaces, which are the only ones CV32A60X implements. Operands arrive in the issue cycle. Commit is generated in the same cycle as an accepted issue, with `commit_kill = 0`. Terminates at the clocked command decoder | DEC-03 |
+| Host ↔ coprocessor link | **CV-X-IF v1.0.0 (ratified)**: the issue (with its unsplit register transaction), commit and result interfaces. The compressed interface is tied off (`ready = 1`, `accept = 0`, DEC-14); there is no memory interface. Operands arrive in the issue cycle. Commit is generated in the same cycle as an accepted issue, with `commit_kill = 0`. Terminates at the clocked command decoder | DEC-03 |
 | Clock-domain boundary | Sync/async bridge carrying one **4-phase bundled-data** channel | DEC-01, D3 |
 | Coprocessor | Asynchronous, bundled-data, 4-phase handshakes internally | DEC-01 |
 | Coprocessor data source | **Local scratchpad memory (SPM)** inside the async domain | DEC-02 |
@@ -27,7 +27,7 @@ Related documents:
 
 ## 2. Frozen Milestone-1 parameters
 
-This table is the **single source of truth** for parameter values. D2–D4 refer to these names and do not redefine them. It will be transcribed directly into `rtl/rvne_pkg.sv`.
+This table is the **single source of truth** for parameter values. D2–D4 refer to these names and do not redefine them. It is transcribed directly into `rtl/rvne_pkg.sv`.
 
 | Name | Value | Meaning |
 |---|---|---|
@@ -59,7 +59,7 @@ These match the reference paper's configuration: 128 weights / 512 spikes for `l
  ┌──────────────────────────── CLOCKED DOMAIN (clk_i) ─────────────────────────────┐
  │                                                                                 │
  │  ┌──────────────┐ CV-X-IF 1.0┌────────────────────────────────────────────────┐ │
- │  │  RISC-V host │ issue+rs ─►│ rvne_command_decoder  (rvne_if.sv adapter)     │ │
+ │  │  RISC-V host │ issue+rs ─►│ rvne_decoder + rvne_status (rvne_if adapter)   │ │
  │  │  CV32A60X    │ commit ───►│  • decodes custom-0 / custom-1                 │ │
  │  │  RV32 + RVNE │ (same cyc, │  • issue-time legality (accept / reject)       │ │
  │  │              │   kill=0)  │  • latches rs1/rs2 at accepted issue           │ │
@@ -69,7 +69,7 @@ These match the reference paper's configuration: 128 weights / 512 spikes for `l
  │                              └───────────────────────┬────────────────────────┘ │
  │                                                      │ cmd bundle / rsp bundle  │
  │                              ┌───────────────────────▼────────────────────────┐ │
- │                              │ rvne_async_if  — SYNC half                     │ │
+ │                              │ rvne_bridge_sync + rvne_sync2                  │ │
  │                              │  flopped req · 2-FF ack synchroniser           │ │
  │                              └───────────────────────┬────────────────────────┘ │
  └──────────────────────────────────────────────────────┼──────────────────────────┘
@@ -77,12 +77,12 @@ These match the reference paper's configuration: 128 weights / 512 spikes for `l
  ┌──────────────────────────────────────────────────────┼──────────────────────────┐
  │  ASYNCHRONOUS DOMAIN (no clock)                      │                          │
  │                              ┌───────────────────────▼────────────────────────┐ │
- │                              │ rvne_async_if — ASYNC half / async_controller  │ │
+ │                              │ rvne_bridge_async (+ c_element, delay)         │ │
  │                              │  C-element handshake control, matched delays   │ │
  │                              └───┬───────────────┬───────────────┬────────────┘ │
  │                                  │               │               │              │
  │                      ┌───────────▼──┐   ┌────────▼──────┐  ┌─────▼──────────┐   │
- │                      │ SPM 16 KiB   │   │ weight_loader │  │ spike_loader   │   │
+ │                      │ rvne_spm     │   │ rvne_exec     │  │ rvne_exec      │   │
  │                      │ 16 × 32b bank│──►│  → wvr (16×32)│  │  → svr (16×32) │   │
  │                      └──────────────┘   └───────────────┘  └────────────────┘   │
  │                                                                                 │
@@ -92,25 +92,25 @@ These match the reference paper's configuration: 128 weights / 512 spikes for `l
 
 ## 4. Synchronous / asynchronous partition
 
-| Block | Domain | RTL file (spec §9.2) | Responsibility |
+| Block | Domain | RTL file (DEC-15; supersedes spec §9.2) | Responsibility |
 |---|---|---|---|
 | RISC-V host | Clocked | external (CV32A60X @ `b1f80bd`) | Runs software, offloads RVNE instructions over CV-X-IF v1.0.0, handles control flow and traps |
-| CV-X-IF adapter | Clocked | `rvne_if.sv` | CV-X-IF v1.0.0 port bundle (`X_NUM_RS = 2`, `X_ID_WIDTH = 2`, `X_RFR_WIDTH = X_RFW_WIDTH = 32`): issue, register (unsplit), commit and result signals only. The compressed, memory and memory-result interfaces are not implemented by CV32A60X and are not present in the adapter |
-| Command decoder | Clocked | `rvne_command_decoder.sv` | Issue-time decode and accept/reject; latches rs1/rs2, which arrive in the issue cycle; checks the platform commit assumptions with assertions (D3 §2); operand-value checks; owns the STATUS register; builds the bridge command; returns the X-IF result. **CV-X-IF terminates here** |
-| Bridge, sync half | Clocked | `rvne_async_if.sv` | Drives `req` and the command bundle from flops; synchronises `ack`; captures the response bundle |
-| Bridge, async half + controller | Async | `rvne_async_if.sv`, `async_controller.sv` | Accepts `req`, sequences SPM access and register writes through matched delays, raises `ack` with the response bundle |
-| SPM | Async | inside `rvne_coprocessor.sv` (`spm` submodule) | 16 banks × 256 words; one row read or one word write per command |
-| Weight loader | Async | `weight_loader.sv` | Routes SPM read data to the selected WVR entries; generates their write enables |
-| Spike loader | Async | `spike_loader.sv` | Same as the weight loader, for SVR |
-| WVR | Async | `wvr.sv` | 16 × 32 b latch array; read port for `rvne.rdwv` and future compute |
-| SVR | Async | `svr.sv` | 16 × 32 b latch array; read port for `rvne.rdsv` and future compute |
-| Top | Both | `rvne_coprocessor.sv` | Integrates everything; exposes CV-X-IF, `clk_i`, `rst_ni` |
+| CV-X-IF adapter | Clocked | `rvne_if.sv` | CV-X-IF v1.0.0 port bundle (`X_NUM_RS = 2`, `X_ID_WIDTH = 2`, `X_RFR_WIDTH = X_RFW_WIDTH = 32`): issue, register (unsplit), commit and result. Compressed interface tied off (`compressed_ready = 1`, `accept = 0`, DEC-14). Memory and memory-result are not implemented by CV32A60X and are not present |
+| Command decoder | Clocked | `rvne_decoder.sv`, `rvne_status.sv` | Issue-time decode and accept/reject; latches rs1/rs2, which arrive in the issue cycle; checks the platform commit assumptions with assertions (D3 §2); operand-value checks; owns the STATUS register; builds the bridge command; returns the X-IF result. **CV-X-IF terminates here** |
+| Bridge, sync half | Clocked | `rvne_bridge_sync.sv`, `rvne_sync2.sv` | Drives `req` and the command bundle from flops; synchronises `ack`; captures the response bundle |
+| Bridge, async half + controller | Async | `rvne_bridge_async.sv`, `rvne_c_element.sv`, `rvne_delay.sv` | Accepts `req`, sequences SPM access and register writes through matched delays, raises `ack` with the response bundle |
+| SPM | Async | `rvne_spm.sv` | 16 banks × 256 words; one row read or one word write per command |
+| Weight loader | Async | `rvne_exec.sv` (routing only, DEC-15) | Routes SPM read data to the selected WVR entries; generates their write enables |
+| Spike loader | Async | `rvne_exec.sv` (routing only, DEC-15) | Same as the weight loader, for SVR |
+| WVR | Async | `rvne_wvr.sv` | 16 × 32 b latch array; read port for `rvne.rdwv` and future compute |
+| SVR | Async | `rvne_svr.sv` | 16 × 32 b latch array; read port for `rvne.rdsv` and future compute |
+| Top | Both | `rvne_top.sv` | Integrates everything; exposes CV-X-IF, `clk_i`, `rst_ni` |
 | Synaptic engine, neuron engine, SOR | Async | reserved | Phase 3–4; not specified here |
 
 **Partition rule.** CV-X-IF terminates at the clocked command decoder. Anything that depends on the CPU's instruction or register stream (decode, legality, commit, status) lives in the clocked domain. The asynchronous boundary begins only **after** legality checking and the formation of the architectural command (the bridge command bundle, D3 §3). As a result, the async domain only ever receives **legal, committed** commands and needs no error path in M1.
 
 **Host-side notes.**
-- **Compressed instructions.** The compressed CV-X-IF interface is not implemented by CV32A60X, so the RVNE adapter does not connect it. RVNE instructions are 32-bit uncompressed custom instructions. RVC being enabled in the CPU does not imply that the compressed XIF interface exists.
+- **Compressed interface** (DEC-14): present in the pinned RTL. When `CvxifEn = 1`, CVA6 instantiates `cvxif_compressed_if_driver`, which can stall when `compressed_ready` is low. The adapter therefore ties it off with `compressed_ready = 1`, `compressed_resp.accept = 0` and `compressed_resp.instr = '0`. Offered compressed instructions are rejected, and CVA6 raises its own illegal-instruction exception. RVNE defines no compressed instructions. **Memory and memory-result interfaces:** not implemented by CV32A60X (absent from `CVXIF_REQ_T`/`CVXIF_RESP_T`) and not connected.
 - **No speculation.** CV32A60X does not support speculative CV-X-IF execution. Its integration (`cvxif_issue_register_commit_if_driver.sv`) generates the commit transaction in the same cycle as an accepted issue, `commit_valid = issue_valid && issue_ready`, and always drives `commit_kill = 0`. An accepted instruction is therefore already committed, and RVNE needs no commit-wait or kill handling.
 - **IDs.** With `X_ID_WIDTH = 2` the host can track up to 4 offloaded IDs, but RVNE accepts only one at a time (§6), so the decoder only needs to store the single active `id`.
 

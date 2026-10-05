@@ -1,0 +1,6 @@
+sim/work/
+*.jou
+*.pb
+.Xil/
+__pycache__/
+sim/vectors/

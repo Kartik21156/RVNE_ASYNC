@@ -29,7 +29,7 @@ Host: CV32A60X (DEC-05). Interface: **CV-X-IF v1.0.0** with `X_NUM_RS = 2`, `X_I
   assign commit_o.commit_kill = 1'b0;   // "Always commit since speculation in execute is not possible"
   ```
   So in M1, an accepted instruction is committed in the cycle it is accepted. The decoder has **no commit-wait state and no kill path**.
-- **Compressed, memory and memory-result interfaces:** not implemented by CV32A60X, and therefore not connected by the RVNE adapter. RVNE instructions are 32-bit uncompressed custom instructions. The coprocessor accesses only its local SPM.
+- **Compressed interface** (DEC-14): present in the pinned RTL. When `CvxifEn = 1`, CVA6 instantiates `cvxif_compressed_if_driver`, which can stall when `compressed_ready` is low. The adapter therefore ties it off with `compressed_ready = 1`, `compressed_resp.accept = 0` and `compressed_resp.instr = '0`. Offered compressed instructions are rejected, and CVA6 raises its own illegal-instruction exception. RVNE defines no compressed instructions. **Memory and memory-result interfaces:** not implemented by CV32A60X (absent from `CVXIF_REQ_T`/`CVXIF_RESP_T`) and not connected. The coprocessor accesses only its local SPM.
 
 | X-IF interface | Fields used | Decoder behaviour |
 |---|---|---|
@@ -130,7 +130,7 @@ The channel is **bundled-data**. The data wires are ordinary single-rail signals
 - ③ The async side completes the operation and raises `ack↑`. ④ After 2 FF stages, the sync side sees `ack_s = 1`. ⑤ It captures `rsp_rdata` and drops `req↓`.
 - ⑥ The async side returns to zero: `ack↓`. ⑦ The sync side sees `ack_s = 0`, and the channel is idle.
 
-## 4. Sync half (`rvne_async_if`, clocked)
+## 4. Sync half (`rvne_bridge_sync`, clocked)
 
 | # | Rule |
 |---|---|
