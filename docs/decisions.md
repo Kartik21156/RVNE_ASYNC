@@ -81,3 +81,31 @@ Block responsibilities and the clocked/async partition are unchanged; only the f
 `rvne_exec.sv` contains **no independent architectural execution engine** in M1. It performs routing and control between the decoded command and the async-domain resources (SPM, WVR, SVR). It is not a conventional synchronous execution unit.
 
 **Impact.** D1 §4 "RTL file" column. Spec §9.2 file names are superseded for RTL (the docs/ and model/ names are unchanged).
+
+### DEC-16 — Two timing assumptions missing from D3 §5.2
+**Status:** Proposed (awaiting approval)
+
+**Problem.** D3 §5.2 lists T1–T5 and states that they are "the **only** timing assumptions in the design". D6.5 shows that the frozen RTL contract depends on two more.
+
+**Evidence** (`sim/run_d65.py`, D6.5):
+- **Reset width.** By contract, `rvne_delay` resets through output gating and does **not** clear its delay node (rtl_module_spec §4.9). If `rst_ni` is released before the chain has drained, a stale node re-asserts its stage while `req = 0`. FAULT=3 (a 0.3 ns reset during the `p_spm` window) re-opens `p_spm` with `req = 0`, and `a_P6` fires.
+- **Read-data path.** `rsp_rdata` settles after decode, then SPM read, then the response mux (`2·T_EXEC + T_SPM` in the model). P5 and P3 require it to be valid at `ack↑`, i.e. `D_DEC + D_SPM + D_WR ≥ t(cmd → rsp_rdata)`. T1 and T2 do not imply this, because T3 covers only the latch. Configuration `viol_rsp` (each of T1 and T2 met with ~10 ps, `D_WR = 0.05`) makes `a_P3` fire.
+
+**Options.**
+- (a) State both as explicit assumptions: T6 and T7.
+- (b) For T6, make `rvne_delay` clear its node on reset. Rejected: this changes the frozen §4.9 contract, and a real delay line cannot be cleared instantly either.
+- (c) Widen T3 to cover the response path. Rejected: it hides a distinct path inside a latch-timing rule.
+
+**Decision (proposed).** (a):
+
+| # | Assumption | Check |
+|---|---|---|
+| T6 | `rst_ni` stays low for at least `D_DEC + D_SPM + D_WR` (the async control drains before release) | D6.5 legal reset passes; FAULT=3 → `a_P6` |
+| T7 | `D_DEC + D_SPM + D_WR ≥` worst-case delay from `cmd_*` to a stable `rsp_rdata` | `viol_rsp` → `a_P3` |
+
+In the integrated system, T6 is met with a large margin: reset is held for many `clk_i` cycles, which are ≫ the ns-scale chain. It must still be stated, because R1 currently sets no minimum width.
+
+**Impact.**
+- D3 §5.2: add T6 and T7, and change "the only timing assumptions" to T1–T7.
+- rtl_module_spec §3.3/§4.7: reference T6/T7.
+- No RTL change.

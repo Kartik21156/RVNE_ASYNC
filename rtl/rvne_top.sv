@@ -143,11 +143,20 @@ module rvne_top
     .D_SPM(D_SPM),
     .D_WR (D_WR)
   ) u_bridge_async (
-    .rst_ni (rst_ni),
-    .req_i  (req),
-    .ack_o  (ack),
-    .p_spm_o(p_spm),
-    .p_wr_o (p_wr)
+    .rst_ni            (rst_ni),
+    .req_i             (req),
+    .ack_o             (ack),
+    .p_spm_o           (p_spm),
+    .p_wr_o            (p_wr),
+    // simulation-only checker inputs (spec §4.7 item 3)
+    .cmd_chk_i         (cmd),
+    .rsp_rdata_chk_i   (rsp_rdata),
+    .spm_row_addr_chk_i(spm_row_addr),
+    .spm_wdata_chk_i   (spm_wdata),
+    .spm_bank_we_chk_i (spm_bank_we),
+    .wvr_we_chk_i      (wvr_we),
+    .svr_we_chk_i      (svr_we),
+    .vec_wdata_chk_i   (vec_wdata)
   );
 
   rvne_exec #(.T_EXEC(T_EXEC)) u_exec (

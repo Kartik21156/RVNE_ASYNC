@@ -21,12 +21,14 @@ Every module contract and exit criterion in §4/§6 is unchanged; only the step 
 | X-d | `xsim`/`xvlog` are `.bat` wrappers, and `cmd` splits unquoted arguments at `=` | Scripts | Quote plusargs: `-testplusarg "MODE=1"` |
 | X-e | `force`/`release` on a variable that `always_comb` drives keeps the forced value until that block's inputs next change | Testbench fault injection | Expected SystemVerilog semantics; explains the double `a_tieoff` report in D6.2 MODE=5 |
 | X-f | A hierarchical reference cannot name a type (`dut.state_e'(…)`, VRFC 10-8358) | Testbench only | Force enum state with a sized literal and a comment naming the state |
+| X-h | **A continuous-assignment delay to a `logic` variable is applied as a transport delay**: a pulse shorter than the delay propagates. Only a **net** (`wire`) target gets inertial semantics. Probe: a 1.85 ns pulse through `#3.7` passes on `logic` and is absorbed on `wire`. | RTL (`rvne_delay`) and testbench | `rvne_delay`'s node is a `wire`, as required for the §4.9 inertial contract; delayed stand-in signals in testbenches are nets. Caught by the D6.5 inertial test. |
+| X-i | Zero-time races between a testbench reacting to an event and an event-triggered checker on the same event | Testbench fault injection | Injected actions wait 1 ps after the triggering event (a real sync side needs ≥ 2 clocks) |
 | X-g | Concurrent assertions sample preponed values, so a fault injected in the first cycle of a state can be invisible to `$fell`/`$past` (FAULT=3 initially missed `a_P4_sync`) | Testbench fault injection | Expected SVA semantics; inject at least one cycle into the state |
 
 Rule derived from X-b: **every assertion added in D6 must be shown to fire at least once under deliberate fault injection.** Passing quietly is not evidence that it is checking anything.
 
 Fault-injection coverage so far:
-- Shown to fire: `a_X1`–`a_X4`, `a_tieoff`, `a_cmd_wellformed`, `a_S1`, `a_P8_sync`, `a_P4_sync`, `a_S3`, `a_rsp_pulse`.
+- Shown to fire: `a_X1`–`a_X4`, `a_tieoff`, `a_cmd_wellformed`, `a_S1`, `a_P8_sync`, `a_P4_sync`, `a_S3`, `a_rsp_pulse`; async bridge: `a_P2`, `a_P3`, `a_P4_ack_rise`, `a_P4_ack_fall`, `a_P4_req_fall`, `a_P5`, `a_P6`, `a_P7`, `a_P8`, `a_W1`, `a_W2`.
 - **Outstanding:** `a_issue_ready_state`, `a_cmd_stable`, `a_result_stable`, `a_one_cmd`, `a_err_xor_clr`, `a_rsp_in_wait` (decoder), and `a_set_clr_excl`, `a_one_err` (status). These all compile without the X-b warning, so they are active, but none has yet been made to fire. To close before D6.7.
 
 ## N-3 — Erratum in rtl_module_spec.md §4.5 (informative text only)
@@ -43,6 +45,12 @@ Fault-injection coverage so far:
 
 D6.4 measures exactly 7 (directed D1). The normative FSM table is correct; only the informative latency sentence is off by one. It changes no behaviour. To be corrected through a decision entry if the frozen text is to be edited.
 
+## N-5 — Notes for D6.6 from D6.5
+
+- **Strobe gating has no modelled delay.** `rvne_exec`'s `T_EXEC` must apply to the decode/select and data paths only, never to the `p_spm`/`p_wr` AND gate (D3 A5). If the gated enables lag their strobe by `T_EXEC`, the latch window would close after `ack↑` (breaking P5), and W1/W2 would see enable changes inside the window. The D6.5 stand-in follows this rule.
+- **T1/T2 bind only for small `cmd → req` setup.** S1 gives at least one `clk_i` period of setup, so in the integrated system decode and SPM row-read settle before `req↑`. The D6.5 shrink tests therefore use 1 ps setup on 40 % of transactions to exercise T1/T2/T7 directly.
+- **W1 and P2 are coupled.** A command change inside the `p_spm` window necessarily trips W1 as well as P2; FAULT=5 isolates P2 by changing `wdata` inside the `p_wr` window.
+
 ## N-4 — Verification status
 
 | Step | Runner | Result |
@@ -51,3 +59,4 @@ D6.4 measures exactly 7 (directed D1). The normative FSM table is correct; only 
 | D6.2 | `python sim/run_d62.py` | 46,089 issue vectors through the adapter; X1–X4 and `a_tieoff` each fire under injection |
 | D6.3 | `python sim/run_d63.py` | Part A 46,089/46,089 classifications across all 11 D2 §5.1 categories; Part B 8,126/8,126 transactions (6,691 bridge commands, 896 operand errors with no command, 294 rejections, 245 STATUS reads); `a_cmd_wellformed` fires under injection; D6.2 regression passes |
 | D6.4 | `python sim/run_d64.py` | All 6,691 D6.3-proven commands plus 59 directed transactions cross the boundary with the exact D5 response; the cycle schedule (S1–S5) is checked on 6,749 transactions with `ack` at arbitrary phases (0.1–60 ns); fast-path latency is exactly 7 edges; spurious `ack` holds off `cmd_ready`; reset mid-transaction aborts with no `rsp_valid`; all 5 bridge assertions fire alone under injection; D6.3/D6.2 regression passes |
+| D6.5 | `python sim/run_d65.py` | C-element: 3,064 checks (exhaustive transitions from both states plus a 3,000-step random walk with asynchronous resets). Delay: 86 checks (exact `D` on both edges, inertial absorption, immediate reset, pending transition across reset). Async bridge: 4 legal timing configs × 2,030 transactions, all 10 ops, exact E0–E8 event times and per-op enable pulses, back-to-back requests, legal mid-transaction reset; 3 delay-violation configs fire exactly `a_W1` / `a_W2` / `a_P3`; 11 protocol faults each fire exactly their target; D6.4/D6.3/D6.2 regression passes. |
